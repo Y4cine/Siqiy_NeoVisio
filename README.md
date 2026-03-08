@@ -23,7 +23,7 @@ What would you like to see in the product?
 
 If it's not too much trouble, please also go through the object list and give me your comments on it.
 
-[Manifest in English](./Manifest/siqiy-manifest-en.pdf)!
-[Manifest in English as typst](./Manifest/siqiy-manifest-en.typ)!
+[Manifest in English](./Manifest/siqiy-manifest-en.pdf)!  
+[Manifest in English as typst](./Manifest/siqiy-manifest-en.typ)!  
 
-[Objects list as Excel file](./Manifest/siqiy-visio-objektmodell_en.xlsx)!
+[Objects list as Excel file](./Manifest/siqiy-visio-objektmodell_en.xlsx)!  
