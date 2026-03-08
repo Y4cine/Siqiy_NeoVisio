@@ -272,94 +272,77 @@ Eine Web Component ermöglicht das direkte Einbetten in beliebige Webseiten – 
 
 ## 13. Technischer Stack
 
-### Architektur-Entscheidung: Rendering
+Der Stack wurde in zwei Runden durch sieben unabhängige LLM-Analysen kritisch geprüft und konsolidiert. Die ursprünglichen Vorschläge für Hybrid-Rendering (PixiJS + SVG) und HyperFormula wurden von allen Analysen übereinstimmend abgelehnt und ersetzt.
 
-Die Wahl der Rendering-Engine ist die fundamentalste Weichenstellung des Projekts.
+### Konsens-Ergebnis der externen Reviews
 
-| Ansatz | Stärken | Schwächen für Siqiy |
+| Komponente | Bewertung | Ergebnis |
 |---|---|---|
-| **DOM/SVG** (tldraw, React Flow) | Accessibility, CSS-Styling, DevTools | Performance bei >500 Objekten bricht ein |
-| **Canvas 2D** (Konva, Fabric) | Schnell, pixelgenaue Kontrolle | Kein natives Hit-Testing, keine Accessibility |
-| **WebGL** (PixiJS) | Extrem schnell, 10.000+ Objekte | Komplex, Text-Rendering aufwändig |
-| **Hybrid** | Beste Performance + UX | Komplexere Architektur |
+| PixiJS + SVG Hybrid | ❌ Einstimmig abgelehnt | Koordinaten-Drift, doppelte Hit-Testing, Wartungsalbtraum |
+| HyperFormula | ❌ Einstimmig abgelehnt | GPLv3-Lizenz blockiert OSS, Grid-Semantik passt nicht zu Shape-Graph |
+| Yjs | ✅ Klarer Konsens | Industriestandard, beste Tooling-Unterstützung |
+| React | ✅ Klarer Konsens | Community-Argument schlägt technische Eleganz |
+| Tauri | ✅ Klarer Konsens | Web-first, kleiner Footprint, kein Electron-Overhead |
 
-**Empfehlung: Hybrid-Ansatz**
+### Rendering-Strategie: Phasenweise
 
-- **WebGL/Canvas (PixiJS)** für das eigentliche Rendering der Shapes (Performance)
-- **SVG-Overlay** für Connectors und Text (Präzision, Skalierung)
-- **DOM-Layer** ganz oben für UI-Elemente, ShapeSheet-Editor, Handles
+Der Renderer wird hinter einer sauberen Abstraktionsschicht gekapselt – das macht ihn austauschbar ohne Rewrite der Logik:
 
-### Warum nicht tldraw?
+**Phase 1–2: Konva.js (Canvas 2D)**
+- Einheitlicher Render-Pfad, kein Hybrid-Chaos
+- Nativ scharfer Text ohne Workarounds
+- Integriertes Objektmodell passt zum ShapeSheet-Konzept
+- Skaliert bis ~5000 Shapes – ausreichend für fast alle Diagramme
 
-tldraw bietet gute UX, ist aber für Siqiy zu sehr eine fertige Meinung:
+**Phase 3+: PixiJS (pure WebGL, wenn Profiling es erfordert)**
+- Nur wenn Performance-Messungen es rechtfertigen
+- Ausschliesslich WebGL – kein SVG-Overlay
+- Text über SDF-Fonts gelöst
 
-- Kein echtes Port/Anker-System
-- Kein orthogonales Connector-Routing
-- Keine Metadaten-Schicht hinter Shapes
-- Die interne Architektur ist schwer erweiterbar ohne Fork
-- Zu sehr auf Whiteboard-UX optimiert
-
-### Datenmodell
-
-CRDTs und reaktive Formel-Engine schließen sich nicht aus – Siqiy braucht beide:
-
-```
-┌─────────────────────────────────────┐
-│  CRDT-Layer (Yjs)                   │  ← Kollaboration, Sync
-│  YMap pro Shape, YArray für Seiten  │
-├─────────────────────────────────────┤
-│  Reaktiver Dependency-Graph         │  ← ShapeSheet-Formeln
-│  (HyperFormula oder custom)         │
-├─────────────────────────────────────┤
-│  Semantischer Metadaten-Layer       │  ← Shape-Properties, Typen
-│  (JSON-Schema pro Shape-Typ)        │
-└─────────────────────────────────────┘
-```
-
-**Kritisches Risiko:** CRDTs und reaktive Formel-Graphen zusammen sind komplex. Wenn eine Formel sich auf eine Shape bezieht die gerade jemand anderes bearbeitet, entsteht ein Konflikt auf Formel-Ebene, nicht nur auf Daten-Ebene. Das muss von Anfang an mitgedacht werden.
-
-### Connector-Routing
-
-Das orthogonale Routing ist eine der härtesten technischen Nüsse:
-
-- **A\*-Algorithmus** auf einem Gitter – Standard, aber naiv bei vielen Objekten langsam
-- **Visibility Graph** – präziser, aber O(n²) Komplexität
-- **draw.io Routing-Code** – MIT-lizenziert, praxiserprobt, wiederverwendbar
-
-draw.io hat dieses Problem bereits gelöst. Der Routing-Code ist MIT-lizenziert und eine ernsthafte Basis.
-
-### Empfohlener Stack
+### Architektur-Schichten
 
 ```
 ┌─────────────────────────────────────────────┐
 │  UI-Layer                                   │
-│  React + TypeScript                         │
-│  shadcn/ui für Komponenten                  │
+│  React + TypeScript + shadcn/ui             │
 ├─────────────────────────────────────────────┤
-│  Canvas-Engine                              │
-│  PixiJS (WebGL) für Shape-Rendering         │
-│  SVG-Overlay für Connectors & Text          │
+│  Renderer-Interface (abstrakt)              │
+│  Konva.js Phase 1 → PixiJS Phase 3          │
+├─────────────────────────────────────────────┤
+│  Reaktiver DAG (Formel-Engine)              │
+│  Custom Parser + Preact Signals             │
+│  Formel-Auswertung immer lokal              │
+├─────────────────────────────────────────────┤
+│  CRDT-Layer (Yjs)                           │
+│  Speichert: Formeln, Werte, Struktur        │
+│  Berechnet nicht – nur Daten                │
 ├─────────────────────────────────────────────┤
 │  Routing-Engine                             │
-│  draw.io Routing-Algorithmen (MIT)          │
-│  Ports/Anker custom implementiert           │
+│  Phase 1: Direkte Linien (manuell)          │
+│  Phase 2: Custom A* + ELK.js                │
 ├─────────────────────────────────────────────┤
-│  Formel-Engine                              │
-│  HyperFormula (reaktiver Dep-Graph)         │
-│  Pyodide für Python-Scripting               │
-├─────────────────────────────────────────────┤
-│  State & Kollaboration                      │
-│  Yjs (CRDT) + WebRTC / WebSocket            │
-│  Zustand für lokalen UI-State               │
+│  Scripting                                  │
+│  TypeScript nativ + Pyodide (Plugin)        │
 ├─────────────────────────────────────────────┤
 │  Desktop                                    │
 │  Tauri (Rust) – web-first, desktop-ready    │
 └─────────────────────────────────────────────┘
 ```
 
+### Das kritische Architekturprinzip: Formeln vs. CRDT
+
+Dies ist das grösste technische Risiko des Projekts – alle sieben Reviews nennen es explizit:
+
+> **Formeln werden lokal ausgewertet, niemals im CRDT gespeichert.**
+
+Das bedeutet konkret:
+- **Yjs speichert:** Formel-Strings, rohe Property-Werte, Dokumentstruktur
+- **Lokale Engine berechnet:** abgeleitete Werte aus Formeln
+- **Bei Konflikt** (Nutzer A ändert Formel, Nutzer B löscht referenzierte Shape): "Broken Reference"-Marker statt Absturz – Formel bleibt erhalten, zeigt Fehler an
+
 ### Strategie
 
-**Web-first, Desktop-ready.** Die App als Web-App bauen, von Anfang an so architekturiert dass Tauri-Wrapping trivial ist. Lokale Datenhaltung als Default, keine Cloud-Abhängigkeiten im Core.
+**Web-first, Desktop-ready.** Lokale Datenhaltung als Default, keine Cloud-Abhängigkeiten im Core. Kollaboration ist in Phase 1 architektonisch vorbereitet aber optional – das ShapeSheet-Modell hat Priorität.
 
 ---
 
@@ -403,6 +386,415 @@ Ein bekannter Visio-Experte der öffentlich sein erstes Framework in Siqiy baut.
 | **Phase 2 – Kern** | Dynamische Referenzen (Referenz vs. Kopie), Typ-System für Shapes, Plugin-System (API + Marketplace), Python-Scripting via Pyodide |
 | **Phase 3 – Plattform** | Git-kompatibles Format, KI/MCP-Integration, Kollaboration (CRDT), Browser-Renderer / Office Add-in |
 | **Phase 4 – Ökosystem** | Validation Engine, Livedaten-Anbindung, Drill-Down / Hierarchie, Zeitdimension / Simulation |
+
+---
+
+## 17. Formel-Syntax
+
+Die Referenz-Syntax für ShapeSheet-Formeln ist eine der wenigen wirklich unwiderruflichen Entscheidungen – sie beeinflusst Datenmodell, Serialisierung, Git-Diffs, Plugin-API und KI-Lesbarkeit.
+
+### Designprinzipien
+
+- **Explizit über implizit** – `Self.Width` statt nur `Width`
+- **JavaScript-nah** – sofort verständlich für jeden der JS oder Python kennt
+- **KI-lesbar** – selbsterklärend ohne Kontext
+- **Name als Alias, ID als Anker** – der Nutzer schreibt Namen, das System arbeitet mit IDs; Umbenennungen propagieren automatisch wie ein IDE-Refactoring
+
+### Konvention: Gross-/Kleinschreibung
+
+```
+Self.Width          # System-Cell – Grossbuchstabe = von Siqiy definiert
+Self.Height         # System-Cell
+Self.Prop.druck     # Custom Property – Kleinbuchstabe = vom Framework-Builder definiert
+Self.Prop.material  # Custom Property
+Page.Width          # Dokument-Ebene – Grossbuchstabe
+```
+
+### Vollständige Syntax-Referenz
+
+```
+# Geometrie (System-Cells)
+Self.Width    = Self.Height * 1.5
+Self.LocPinX  = Self.Width * 0.5
+Self.LocPinY  = Self.Height * 0.5
+Self.Angle    = 0
+
+# Custom Properties
+Self.Prop.druck      = 10
+Self.Prop.farbe      = Self.Prop.druck > 8 ? "#CC0000" : "#00AA00"
+
+# Andere Shapes referenzieren (Name → intern ID)
+Self.Width           = Shape("Tank1").Prop.volumen / 100
+Self.Prop.foerdermenge = Shape("Pumpe3").Prop.nennleistung * 0.85
+
+# Connectors referenzieren
+Self.Prop.fluss      = Connector("Leitung1").Prop.durchfluss
+
+# Seite und Dokument
+Self.Width           = Page.Width * 0.1
+Self.Prop.einheit    = Doc.Prop.einheitssystem
+
+# Ports
+Port("Eingang").X    = 0
+Port("Eingang").Y    = Self.Height / 2
+Port("Ausgang").X    = Self.Width
+Port("Ausgang").Y    = Self.Height / 2
+
+# Funktionen (lowercase, vertraut)
+Self.Width           = max(Self.Prop.minbreite, Self.Height * 1.5)
+Self.Prop.label      = concat(Self.Prop.typ, "-", Self.Prop.nummer)
+Self.FillColor       = rgb(255, 0, 0)
+
+# Einheiten (explizit, automatisch konvertierbar)
+Self.Prop.druck      = 10[bar]
+Self.Prop.druck_psi  = Self.Prop.druck[psi]    # automatische Konvertierung
+
+# Sperren (Visios GUARD – modernisiert)
+Self.Width           = locked(100)              # nicht überschreibbar durch Nutzer
+
+# Fehlerbehandlung
+Self.Prop.wert       = Shape("Tank1").Prop.volumen ?? 0   # Fallback wenn Referenz fehlt
+```
+
+### Shape-Referenzen: intern
+
+Der Nutzer schreibt immer den Namen. Siqiy speichert intern die ID:
+
+```
+# Nutzer schreibt:
+Self.Width = Shape("Pumpe3").Prop.nennleistung * 0.85
+
+# Siqiy speichert intern:
+Self.Width = Shape(#a3f9).Prop.nennleistung * 0.85
+```
+
+Wird `Pumpe3` umbenannt, aktualisiert Siqiy alle Formeln automatisch. Der Nutzer sieht immer Namen, das System arbeitet immer mit stabilen IDs.
+
+---
+
+## 18. Datenmodell
+
+Das Datenmodell ist die Grundlage für alles – Serialisierung, Git-Diffs, CRDT, Plugin-API, KI-Lesbarkeit. Es ist eine der unwiderruflichen Architekturentscheidungen.
+
+### Shape-Objekt
+
+```json
+{
+  "id": "a3f9",
+  "name": "Pumpe3",
+  "type": "ref:stencil/pid/pumpen/kreiselpumpe",
+  "master": {
+    "ref": "stencil://pid-standard/kreiselpumpe",
+    "binding": "reference",
+    "overrides": ["cells.FillColor", "props.bezeichnung"]
+  },
+  "cells": {
+    "Width":     { "formula": "Self.Height * 1.5",                            "value": 60.0 },
+    "Height":    { "formula": null,                                            "value": 40.0 },
+    "PinX":      { "formula": null,                                            "value": 120.0 },
+    "PinY":      { "formula": null,                                            "value": 80.0 },
+    "Angle":     { "formula": null,                                            "value": 0.0 },
+    "LocPinX":   { "formula": "Self.Width * 0.5",                             "value": 30.0 },
+    "LocPinY":   { "formula": "Self.Height * 0.5",                            "value": 20.0 },
+    "FillColor": { "formula": "Self.Prop.status == 'on' ? '#00AA00' : '#CC0000'", "value": "#00AA00" },
+    "LineColor": { "formula": null,                                            "value": "#333333" },
+    "Visible":   { "formula": null,                                            "value": true },
+    "Locked":    { "formula": null,                                            "value": false }
+  },
+  "props": {
+    "bezeichnung": {
+      "value": "P-101", "formula": null,
+      "type": "string", "label": "Bezeichnung", "unit": null
+    },
+    "status": {
+      "value": "on", "formula": null,
+      "type": "enum", "options": ["on", "off", "fault"],
+      "label": "Betriebszustand", "unit": null
+    },
+    "druck": {
+      "value": 8.5, "formula": null,
+      "type": "number", "label": "Betriebsdruck", "unit": "bar"
+    },
+    "foerdermenge": {
+      "value": 120.0, "formula": "Shape(#b1e5).Prop.volumen / 10",
+      "type": "number", "label": "Fördermenge", "unit": "m3/h"
+    }
+  },
+  "ports": {
+    "eingang": {
+      "x": { "formula": "0",               "value": 0.0 },
+      "y": { "formula": "Self.Height / 2", "value": 20.0 },
+      "direction": "left",
+      "accepts": ["fluid-line"]
+    },
+    "ausgang": {
+      "x": { "formula": "Self.Width",      "value": 60.0 },
+      "y": { "formula": "Self.Height / 2", "value": 20.0 },
+      "direction": "right",
+      "accepts": ["fluid-line"]
+    }
+  },
+  "children": [],
+  "meta": {
+    "created": "2026-03-08T10:00:00Z",
+    "modified": "2026-03-08T14:23:00Z",
+    "layer": "equipment",
+    "tags": ["pumpe", "kreiselpumpe"],
+    "notes": "Hauptversorgungspumpe Kühlkreis"
+  }
+}
+```
+
+### Drei Designprinzipien
+
+**Formula + Value immer zusammen.** Jede Cell trägt sowohl die Formel als auch den zuletzt berechneten Wert. Rendering liest `value`, der reaktive DAG aktualisiert `value` wenn Abhängigkeiten sich ändern. Git-Diffs zeigen ob sich Formel oder nur Wert geändert hat. KI kann das Dokument lesen ohne die Formel-Engine zu kennen.
+
+**Props sind typisiert.** Jede Custom Property kennt Typ, Einheit und Label – das ermöglicht automatisch generierte Property-Panels, Einheitenkonvertierung, Validierung und KI-Verständnis ohne zusätzliche Schema-Dateien.
+
+**Master-Binding im Shape selbst.** Das `master`-Objekt hält Herkunft, Binding-Typ und lokale Overrides fest. Bei einem Stencil-Update entscheidet Siqiy präzise: was propagiere ich, was lasse ich in Ruhe.
+
+### Connector-Objekt
+
+Connectors sind vollwertige Shapes mit zwei Sonderfeldern – kein Bürger zweiter Klasse wie in Visio:
+
+```json
+{
+  "id": "c7d2",
+  "name": "Leitung1",
+  "type": "ref:stencil/pid/leitungen/fluessigkeit",
+  "connection": {
+    "from": { "shapeId": "a3f9", "port": "ausgang" },
+    "to":   { "shapeId": "b1e5", "port": "eingang" }
+  },
+  "cells": {
+    "LineColor":  { "formula": null, "value": "#0055AA" },
+    "LineWeight": { "formula": null, "value": 2.0 },
+    "Routing":    { "formula": null, "value": "orthogonal" }
+  },
+  "props": {
+    "medium":     { "value": "Wasser", "type": "string", "label": "Medium",     "unit": null },
+    "durchfluss": { "value": 120.0,    "type": "number", "label": "Durchfluss", "unit": "m3/h" }
+  }
+}
+```
+
+### Dokument-Struktur
+
+```json
+{
+  "siqiy": "1.0",
+  "id": "doc-uuid",
+  "meta": { "title": "Kühlkreis Anlage A", "author": "...", "created": "..." },
+  "units": { "length": "mm", "pressure": "bar", "temperature": "°C" },
+  "pages": [
+    {
+      "id": "page-uuid",
+      "name": "Übersicht",
+      "cells": { "Width": 2970, "Height": 2100 },
+      "shapes": []
+    }
+  ],
+  "stencils": [],
+  "scripts": []
+}
+```
+
+### Git-Diffs
+
+Eine einzelne Wertänderung erzeugt einen minimalen, lesbaren Diff:
+
+```diff
+- "value": "off",
++ "value": "on",
+```
+
+Eine Formeländerung:
+
+```diff
+- "formula": "Self.Height * 1.5",
++ "formula": "Self.Height * 2.0",
+- "value": 60.0,
++ "value": 80.0,
+```
+
+---
+
+## 19. Stencil-Format
+
+Ein Stencil ist eine Bibliothek von Master-Shapes – die Quelle der Wahrheit für alle Instanzen die darauf referenzieren.
+
+### Designziele
+
+- **Eigenständige Datei** – ein Stencil ist ohne das Tool lesbar und verwendbar
+- **Versionierbar** – Git-kompatibel, jede Änderung nachvollziehbar
+- **Verteilbar** – als URL, als lokale Datei, als npm-Paket
+- **Typisiert** – definiert nicht nur Shapes sondern deren Typ-Hierarchie
+- **Dokumentiert** – jedes Shape trägt seine eigene Beschreibung
+
+### Stencil-Dateistruktur
+
+Ein Stencil ist ein Ordner (oder ZIP) mit folgender Struktur:
+
+```
+pid-standard/
+├── stencil.json          # Metadaten und Typ-Hierarchie
+├── shapes/
+│   ├── kreiselpumpe.json # Master-Shape Definition
+│   ├── absperrventil.json
+│   ├── behaelter.json
+│   └── ...
+├── geometry/
+│   ├── kreiselpumpe.svg  # Geometrie-Definition (SVG)
+│   └── ...
+├── scripts/
+│   └── validierung.ts    # Framework-Scripts
+└── README.md             # Menschenlesbare Dokumentation
+```
+
+### stencil.json
+
+```json
+{
+  "siqiy-stencil": "1.0",
+  "id": "pid-standard",
+  "name": "P&ID Standard (ISO 10628)",
+  "version": "2.1.0",
+  "author": "Siqiy Community",
+  "license": "MIT",
+  "description": "Standardschablone für Rohrleitungs- und Instrumentenfliessbilder nach ISO 10628",
+  "tags": ["P&ID", "Verfahrenstechnik", "ISO 10628"],
+  "types": {
+    "Komponente": {
+      "description": "Basistyp für alle physischen Komponenten",
+      "props": {
+        "bezeichnung": { "type": "string",  "label": "Bezeichnung", "required": true },
+        "hersteller":  { "type": "string",  "label": "Hersteller",  "required": false },
+        "baujahr":     { "type": "number",  "label": "Baujahr",     "unit": "Jahr" }
+      }
+    },
+    "Rohrkomponent": {
+      "extends": "Komponente",
+      "description": "Alle Komponenten die in Rohrleitungen eingebaut werden",
+      "props": {
+        "nennweite":   { "type": "number",  "label": "Nennweite",   "unit": "DN" },
+        "nenndruck":   { "type": "number",  "label": "Nenndruck",   "unit": "PN" },
+        "werkstoff":   { "type": "string",  "label": "Werkstoff" }
+      }
+    },
+    "Pumpe": {
+      "extends": "Rohrkomponent",
+      "description": "Pumpen aller Art",
+      "props": {
+        "foerdermenge":  { "type": "number", "label": "Fördermenge",  "unit": "m3/h" },
+        "foerderhoehe":  { "type": "number", "label": "Förderhöhe",   "unit": "m" },
+        "antriebsleistung": { "type": "number", "label": "Antriebsleistung", "unit": "kW" }
+      }
+    },
+    "Kreiselpumpe": {
+      "extends": "Pumpe",
+      "description": "Kreiselpumpen (Radial-, Axial-, Diagonalpumpen)"
+    }
+  },
+  "shapes": [
+    "shapes/kreiselpumpe.json",
+    "shapes/absperrventil.json",
+    "shapes/behaelter.json"
+  ]
+}
+```
+
+### Master-Shape Definition
+
+```json
+{
+  "id": "kreiselpumpe",
+  "name": "Kreiselpumpe",
+  "type": "Kreiselpumpe",
+  "description": "Kreiselpumpe nach ISO 10628-2, Symbol KP",
+  "norm": "ISO 10628-2",
+  "geometry": "geometry/kreiselpumpe.svg",
+  "cells": {
+    "Width":     { "formula": "Self.Height * 1.2", "default": 48.0 },
+    "Height":    { "formula": null,                 "default": 40.0 },
+    "LocPinX":   { "formula": "Self.Width * 0.5",  "default": 24.0 },
+    "LocPinY":   { "formula": "Self.Height * 0.5", "default": 20.0 },
+    "FillColor": {
+      "formula": "Self.Prop.status == 'fault' ? '#CC0000' : Self.Prop.status == 'off' ? '#888888' : '#FFFFFF'",
+      "default": "#FFFFFF"
+    }
+  },
+  "props": {
+    "status": {
+      "type": "enum",
+      "options": ["on", "off", "fault"],
+      "default": "off",
+      "label": "Betriebszustand"
+    }
+  },
+  "ports": {
+    "saugstutzen": {
+      "x": { "formula": "0" },
+      "y": { "formula": "Self.Height / 2" },
+      "direction": "left",
+      "label": "Saugstutzen",
+      "accepts": ["fluid-line", "gas-line"]
+    },
+    "druckstutzen": {
+      "x": { "formula": "Self.Width" },
+      "y": { "formula": "Self.Height / 2" },
+      "direction": "right",
+      "label": "Druckstutzen",
+      "accepts": ["fluid-line", "gas-line"]
+    }
+  },
+  "validation": [
+    {
+      "rule": "Self.Prop.nennweite > 0",
+      "severity": "warning",
+      "message": "Nennweite sollte angegeben werden"
+    },
+    {
+      "rule": "Self.Prop.foerdermenge <= 5000",
+      "severity": "error",
+      "message": "Fördermenge überschreitet zulässigen Bereich"
+    }
+  ]
+}
+```
+
+### Binding-Modell: Referenz vs. Kopie
+
+Wenn ein Master-Shape in eine Zeichnung eingefügt wird, entsteht eine Instanz mit explizitem Binding-Status:
+
+```
+Stencil (Quelle der Wahrheit)
+    │
+    ├── Instanz A  [binding: "reference"]
+    │   Erbt alles vom Master, lokale Overrides möglich
+    │   Stencil-Update → Instanz aktualisiert sich
+    │
+    ├── Instanz B  [binding: "copy"]
+    │   Vollständige lokale Kopie, entkoppelt
+    │   Stencil-Update → keine Auswirkung
+    │
+    └── Instanz C  [binding: "reference", status: "outdated"]
+        Master hat sich geändert, Update ausstehend
+        Siqiy zeigt Hinweis, Nutzer entscheidet
+```
+
+### Stencil-Verteilung
+
+Stencils können auf drei Arten referenziert werden:
+
+```json
+"stencils": [
+  { "id": "pid-standard",   "source": "https://stencils.siqiy.io/pid-standard@2.1.0" },
+  { "id": "mein-framework", "source": "file://./stencils/mein-framework" },
+  { "id": "firma-intern",   "source": "npm:@meinefirma/siqiy-stencils@1.0.0" }
+]
+```
+
+Dies ermöglicht firmenweite Stencils die zentral gepflegt werden – ändert sich ein Symbol, aktualisieren sich alle referenzierenden Zeichnungen weltweit.
 
 ---
 
