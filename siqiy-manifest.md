@@ -319,7 +319,7 @@ Der Renderer wird hinter einer sauberen Abstraktionsschicht gekapselt – das ma
 ├─────────────────────────────────────────────┤
 │  Routing-Engine                             │
 │  Phase 1: Direkte Linien (manuell)          │
-│  Phase 2: Custom A* + ELK.js                │
+│  Phase 2: Custom A* + ELK.js               │
 ├─────────────────────────────────────────────┤
 │  Scripting                                  │
 │  TypeScript nativ + Pyodide (Plugin)        │
@@ -797,5 +797,345 @@ Stencils können auf drei Arten referenziert werden:
 Dies ermöglicht firmenweite Stencils die zentral gepflegt werden – ändert sich ein Symbol, aktualisieren sich alle referenzierenden Zeichnungen weltweit.
 
 ---
+
+## 20. ShapeSheet-Editor und Fehlerbehandlung
+
+Der ShapeSheet-Editor ist das wichtigste UI-Element für den Framework-Builder. Er ist nicht nur ein Textfeld – er ist eine intelligente Entwicklungsumgebung für Formeln.
+
+### Smarter Cell-Editor
+
+Die Formel-Syntax ist intern präzise und case-sensitiv – aber der Editor schluckt Ungenauigkeiten und normalisiert sie transparent:
+
+```
+# Nutzer tippt (locker, case-insensitiv):
+self.width = self.height * 1.5
+
+# Editor normalisiert beim Verlassen der Cell:
+Self.Width = Self.Height * 1.5
+
+# Nutzer tippt:
+fillcolor = pumpe3.prop.status = "on" ? green : red
+
+# Editor erkennt Muster, schlägt vor:
+FillColor = Shape("Pumpe3").Prop.status == "on" ? Green : Red
+            ↑ Hinweis: "Meintest du Shape("Pumpe3")?"
+```
+
+**Was der Editor leistet:**
+
+- **Auto-Normalisierung** – Gross-/Kleinschreibung wird beim Verlassen der Cell korrigiert, nicht beim Tippen
+- **Fuzzy Shape-Erkennung** – `pumpe3` wird zu `Shape("Pumpe3")` aufgelöst wenn eindeutig
+- **Autocomplete** – alle verfügbaren Shapes, Properties, Funktionen als Vorschlag
+- **Live-Validierung** – Syntaxfehler, fehlende Referenzen, Typ-Konflikte sofort sichtbar
+- **Formel-Erklärung** – Hover zeigt in Prosa was die Formel tut: *„Breite ist 1.5× die Höhe, aktuell 60px"*
+- **Abhängigkeits-Visualisierung** – welche Cells hängen von dieser ab, welche beeinflusst sie
+- **KI-Vorschläge** – *„Diese Pumpe hat keinen statusbasierten FillColor – soll ich einen vorschlagen?"*
+
+Die Ergonomie beim Editieren hat Priorität. Die Syntax ist das interne Format – der Editor ist die menschliche Schnittstelle dazu.
+
+### Fehlermodell: #ERR statt #REF
+
+Wie in Visio bleibt der letzte gültige Wert immer erhalten und aktiv – die Zeichnung funktioniert weiter. Nur der Editor zeigt den Fehler deutlich, ohne die Arbeit zu blockieren.
+
+```json
+// Normalzustand
+{ "formula": "Self.Height * 1.5", "value": 60.0, "state": "ok" }
+
+// Referenz fehlt – Shape wurde gelöscht
+{ "formula": "Shape(#a3f9).Prop.breite", "value": 60.0, "state": "#ERR:REF",
+  "error": "Shape 'Pumpe3' nicht gefunden" }
+
+// Division durch Null
+{ "formula": "Page.Width / Self.Prop.anzahl", "value": 100.0, "state": "#ERR:DIV",
+  "error": "Division durch Null (anzahl = 0)" }
+
+// Zirkelreferenz
+{ "formula": "Self.Height", "value": 40.0, "state": "#ERR:CIRC",
+  "error": "Zirkelreferenz: Width → Height → Width" }
+```
+
+**Fehlercodes:**
+
+| Code | Bedeutung |
+|---|---|
+| `#ERR:REF` | Referenz nicht gefunden (Shape, Port, Property) |
+| `#ERR:DIV` | Division durch Null |
+| `#ERR:TYPE` | Typ-Konflikt in Formel |
+| `#ERR:CIRC` | Zirkelreferenz im Dependency-Graph |
+| `#ERR:SYN` | Syntaxfehler in der Formel |
+| `#ERR:UNIT` | Inkompatible Einheiten |
+| `#ERR:LOCK` | Versuch eine gesperrte Cell zu überschreiben |
+
+Der letzte gültige `value` bleibt immer erhalten. Die Zeichnung bleibt funktionsfähig. `#ERR` ist klarer als Visios `#REF` – es signalisiert einen Fehler, nicht nur eine fehlende Referenz.
+
+---
+
+## 21. Delta-Speicherung
+
+### Das Prinzip
+
+Shapes in einer Zeichnung sind meistens Instanzen eines Masters – sie unterscheiden sich nur in wenigen Cells vom Ur-Shape. Siqiy speichert intern nur diese Differenz, nicht die vollständige Shape.
+
+Ein P&ID mit 200 gleichartigen Ventilen speichert nicht 200× die komplette Geometrie – sondern 200× nur das was abweicht, typischerweise Name, Position und ein paar Properties.
+
+### Implementierung: Laufzeit vs. Disk
+
+Die Delta-Speicherung ist eine transparente Optimierung – der Nutzer und die API merken nichts davon:
+
+```
+Zur Laufzeit (im Speicher):    vollständige, aufgelöste Objekte
+Beim Speichern (auf Disk):     nur Deltas gegen den Master
+```
+
+```json
+// Was auf Disk steht (kompakt)
+{
+  "id": "a3f9",
+  "name": "Pumpe3",
+  "master": "stencil://pid-standard/kreiselpumpe",
+  "delta": {
+    "cells": {
+      "FillColor": { "formula": "Self.Prop.status == 'on' ? Green : Red", "value": "#00AA00" }
+    },
+    "props": {
+      "bezeichnung": { "value": "P-101" },
+      "druck":        { "value": 8.5 }
+    }
+  }
+}
+
+// Was zur Laufzeit im Speicher ist (vollständig aufgelöst)
+{
+  "id": "a3f9",
+  "cells": {
+    "Width":     { "formula": "Self.Height * 1.2", "value": 48.0 },
+    "Height":    { "formula": null, "value": 40.0 },
+    "FillColor": { "formula": "Self.Prop.status == 'on' ? Green : Red", "value": "#00AA00" }
+  }
+}
+```
+
+Beim Laden löst Siqiy das Delta automatisch auf. Beim Speichern berechnet Siqiy das Delta automatisch. Die Formel-Engine und der Renderer arbeiten immer mit vollständigen Objekten.
+
+### Kollaboration und Deltas
+
+Yjs synchronisiert immer das vollständig aufgelöste Objekt – nicht das Delta. Delta-Berechnung ist ausschliesslich ein Serialisierungsschritt. Das vermeidet Komplexität beim Konfliktlösen: Yjs muss nie wissen was vom Master kommt und was lokal ist.
+
+### Wenn der Master fehlt
+
+```json
+{
+  "state": "#ERR:REF",
+  "error": "Master 'stencil://pid-standard/kreiselpumpe' nicht gefunden",
+  "fallback": "last-known-full"
+}
+```
+
+Siqiy speichert beim letzten erfolgreichen Laden einen Snapshot des vollständig aufgelösten Objekts als Fallback. Fehlt der Master, arbeitet die Zeichnung mit diesem Snapshot weiter – mit sichtbarem Hinweis, aber ohne Funktionsverlust.
+
+
+
+## 22. Stil-System
+
+Stile in Siqiy sind CSS-artig – sie definieren wiederverwendbare Erscheinungsbilder die regelbasiert und automatisch auf Shapes angewendet werden. Das Kernprinzip ist Cascade: spezifischere Regeln überschreiben allgemeinere, mehrere Regeln können gleichzeitig auf verschiedene Properties wirken.
+
+### Vier Cascade-Ebenen
+
+```
+Ebene 1: Basis-Stil       (Dokument-Default, wie CSS reset)
+Ebene 2: Typ-Stil         (am Master-Shape definiert)
+Ebene 3: Regel-Stil       (datengetrieben, automatisch)
+Ebene 4: Direkte Zuweisung (manuell, höchste Priorität)
+```
+
+### Praxisbeispiel: Flowsheet-Stile
+
+Ein Ventil erhält sein Erscheinungsbild vollautomatisch aus seinen Properties – ohne dass der Zeichner etwas manuell einstellen muss:
+
+```json
+{
+  "styles": {
+    "medium.produkt":   { "cells": { "FillColor": "#CC0000" } },
+    "medium.wasser":    { "cells": { "FillColor": "#0055CC" } },
+    "medium.dampf":     { "cells": { "FillColor": "#FF8800" } },
+    "medium.cip":       { "cells": { "FillColor": "#00AA55" } },
+
+    "wichtigkeit.probenahme": {
+      "cells": { "LineWeight": 0.5, "CornerRadius": 0, "TextVisible": false }
+    },
+    "wichtigkeit.hauptlinie": {
+      "cells": { "LineWeight": 1.5 }
+    },
+
+    "geometrie.1D": { "cells": { "CornerRadius": 0 } },
+    "geometrie.2D": { "cells": { "CornerRadius": 3 } }
+  },
+
+  "style-rules": [
+    { "condition": "Self.Prop.medium == 'Produkt'",    "apply": "medium.produkt" },
+    { "condition": "Self.Prop.medium == 'Wasser'",     "apply": "medium.wasser" },
+    { "condition": "Self.Prop.medium == 'Dampf'",      "apply": "medium.dampf" },
+    { "condition": "Self.Prop.medium == 'CIP'",        "apply": "medium.cip" },
+    { "condition": "Self.Prop.wichtigkeit == 'Probenahme'", "apply": "wichtigkeit.probenahme" },
+    { "condition": "Self.Prop.geometrie == '1D'",      "apply": "geometrie.1D" },
+    { "condition": "Self.Prop.geometrie == '2D'",      "apply": "geometrie.2D" }
+  ]
+}
+```
+
+Ergebnis für `Ventil.123` (`medium=Produkt`, `wichtigkeit=Probenahme`, `geometrie=1D`):
+
+```
+medium.produkt        → FillColor:    #CC0000
+wichtigkeit.probenahme → LineWeight:   0.5mm
+                        CornerRadius: 0
+                        TextVisible:  false
+geometrie.1D          → CornerRadius: 0  (redundant, schadet nicht)
+```
+
+Mehrere Regeln greifen gleichzeitig auf verschiedene Properties. Greifen zwei Regeln auf dieselbe Property, gewinnt die spezifischere – oder die spätere in der Liste, konfigurierbar pro Framework.
+
+### Stile und Views
+
+Ein View kann Stil-Regeln selektiv aktivieren oder deaktivieren. Ein Druckplan schaltet z.B. alle farbbasierten Regeln aus und wendet stattdessen einen Schwarzweiss-Stil an.
+
+### Stile im Datenmodell
+
+Stile leben primär im Stencil – sie gehören zum Framework, nicht zur Zeichnung. Eine Zeichnung kann zusätzliche lokale Stile definieren, aber die Framework-Stile kommen aus dem Stencil und propagieren bei Updates automatisch.
+
+---
+
+## 23. Layer-System
+
+Layer in Siqiy verbinden AutoCAD-Präzision mit moderner Tag-Semantik. Shapes gehören mehreren Layern gleichzeitig an – Layer sind keine Schubladen sondern Klassifikationen.
+
+### Hierarchische Layer mit Custom Properties
+
+```json
+{
+  "layers": {
+    "architektur": {
+      "label": "Architektur",
+      "color": "#333333",
+      "props": { "gewerk": "Bau" },
+      "children": {
+        "waende":   { "label": "Wände" },
+        "tueren":   { "label": "Türen & Fenster" },
+        "decken":   { "label": "Decken" }
+      }
+    },
+    "elektro": {
+      "label": "Elektro",
+      "color": "#FFAA00",
+      "props": { "gewerk": "Elektro", "auftragnehmer": "Elektro GmbH" },
+      "children": {
+        "starkstrom": {
+          "label": "Starkstrom",
+          "children": {
+            "steckdosen": { "label": "Steckdosen" },
+            "verteiler":  { "label": "Verteiler" }
+          }
+        },
+        "schwachstrom": {
+          "label": "Schwachstrom",
+          "children": {
+            "datenkabel": { "label": "Datenkabel" },
+            "telefon":    { "label": "Telefon" }
+          }
+        }
+      }
+    },
+    "moebel": {
+      "label": "Möbel",
+      "color": "#00AA55",
+      "children": {
+        "buero":       { "label": "Büro" },
+        "besprechung": { "label": "Besprechung" }
+      }
+    }
+  }
+}
+```
+
+### Shapes mit mehreren Layer-Zugehörigkeiten
+
+```json
+{
+  "id": "a3f9",
+  "name": "Schreibtisch-42",
+  "layers": ["moebel.buero", "elektro.schwachstrom.datenkabel"]
+}
+```
+
+Dieser Schreibtisch erscheint im Möbelplan *und* im Datenkabel-Plan. Er hat eine primäre Zugehörigkeit (`moebel.buero`) und eine sekundäre (`elektro.schwachstrom.datenkabel`) – beide vollwertig.
+
+### Views: gespeicherte Ansichten
+
+Views sind das Herzstück des Layer-Systems – sie kombinieren Layer-Sichtbarkeit, Transparenz, Farb-Overrides und Druckbarkeit zu benannten, wiederverwendbaren Ansichten:
+
+```json
+{
+  "views": {
+    "elektroplan": {
+      "label": "Elektroplan",
+      "layers": {
+        "architektur":          { "visible": true,  "opacity": 0.3, "locked": true },
+        "elektro":              { "visible": true,  "opacity": 1.0 },
+        "elektro.starkstrom":   { "visible": true,  "color-override": "#FF6600" },
+        "elektro.schwachstrom": { "visible": true,  "color-override": "#0066FF" },
+        "moebel":               { "visible": false }
+      },
+      "print": true,
+      "scale": "1:50"
+    },
+    "moebelplan": {
+      "label": "Möbelplan",
+      "layers": {
+        "architektur": { "visible": true,  "opacity": 1.0 },
+        "moebel":      { "visible": true,  "opacity": 1.0 },
+        "elektro":     { "visible": false },
+        "sanitaer":    { "visible": false }
+      }
+    },
+    "druckversion": {
+      "label": "Druckversion SW",
+      "layers": {
+        "*": { "color-override": "monochrome" }
+      },
+      "style-rules": "none",
+      "print": true,
+      "exclude-layers": ["hilfslinien", "massketten.intern"]
+    }
+  }
+}
+```
+
+Der `*`-Wildcard macht alle Layer mit einem Eintrag monochrom. `style-rules: none` schaltet alle farbbasierten Stil-Regeln für diesen View ab.
+
+### Layer-Properties abfragen
+
+Da Layer Custom Properties haben, können Formeln und Scripts sie abfragen:
+
+```
+Self.Prop.auftragnehmer = Layer("elektro").props.auftragnehmer
+```
+
+Und Views können nach Layer-Properties gefiltert werden:
+
+```json
+{ "condition": "layer.props.gewerk == 'Elektro'", "visible": true }
+```
+
+### Was Visio nicht kann – was Siqiy hinzufügt
+
+| Feature | Visio | Siqiy |
+|---|---|---|
+| Hierarchische Layer | ✗ | ✓ |
+| Shape in mehreren Layern | ✗ | ✓ |
+| Custom Properties pro Layer | ✗ | ✓ |
+| Gespeicherte Views | Rudimentär | ✓ vollständig |
+| Farb-Override pro View | ✗ | ✓ |
+| Layer per Formel abfragen | ✗ | ✓ |
+| Stil-Regeln pro View an/aus | ✗ | ✓ |
 
 *Dieses Dokument ist ein lebendes Arbeitsdokument. Es wächst mit dem Projekt.*
